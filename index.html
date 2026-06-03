@@ -596,7 +596,7 @@ html, body { height: 100%; background: var(--bg-deep); color: var(--text-primary
 .stats-top-subtext { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
 .stats-table-header {
   display: grid;
-  grid-template-columns: 32px 48px minmax(120px, 1fr) 1fr 1fr;
+  grid-template-columns: 32px 48px minmax(140px, 1fr) 1fr 1fr;
   gap: 12px;
   padding: 12px 0;
   border-bottom: 1px solid var(--border);
@@ -604,6 +604,35 @@ html, body { height: 100%; background: var(--bg-deep); color: var(--text-primary
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.8px;
+}
+.stats-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.action-btn {
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.04);
+  color: var(--text-primary);
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.action-btn:hover {
+  background: rgba(255,255,255,0.08);
+  transform: translateY(-1px);
+}
+.action-btn.small {
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.score-actions {
+  margin: 12px 0 8px;
+  display: flex;
+  gap: 10px;
 }
 .stat-rank { font-family: 'Oswald', sans-serif; font-size: 14px; color: var(--text-muted); width: 24px; flex-shrink: 0; }
 .stat-row {
@@ -1047,6 +1076,10 @@ html, body { height: 100%; background: var(--bg-deep); color: var(--text-primary
     <div class="search-wrap mb-8">
       <span class="search-icon">🔍</span>
       <input class="search-box" id="stats-search" placeholder="Search players..." oninput="renderStats()">
+    </div>
+    <div class="stats-actions">
+      <button class="action-btn" onclick="exportStatsPDF()">Export Stats PDF</button>
+      <button class="action-btn" onclick="copyStatsShareLink()">Share Live Link</button>
     </div>
     <div id="stats-content"></div>
   </div>
@@ -1720,35 +1753,39 @@ function rotateStrike(innings) {
 }
 
 function checkOverComplete(innings, match) {
-  if (innings.balls > 0 && innings.balls % 6 === 0) {
-    // Over complete
+  const isOverComplete = innings.balls > 0 && innings.balls % 6 === 0;
+  const hasReachedTarget = innings.target && innings.totalRuns >= innings.target;
+  const hasAllOut = innings.wickets >= match.wickets;
+  const hasUsedAllOvers = innings.balls >= match.overs * 6;
+  const inningsEnds = hasReachedTarget || hasAllOut || hasUsedAllOvers;
+
+  if (isOverComplete) {
     const bowler = innings.bowlers[innings.currentBowler];
     if (bowler) {
       bowler.overs = Math.floor(bowler.balls / 6);
-      // Check maiden
-      const overBalls = innings.ballLog.filter(b => b.over === (innings.balls/6 - 1) && !['wide','noball'].includes(b.type));
-      const overRuns = overBalls.reduce((s,b)=>s+b.runs,0);
+      const overBalls = innings.ballLog.filter(b => b.over === (innings.balls / 6 - 1) && !['wide','noball'].includes(b.type));
+      const overRuns = overBalls.reduce((s,b) => s + b.runs, 0);
       if (overRuns === 0) bowler.maidens++;
     }
-    // Rotate strike at end of over
     rotateStrike(innings);
-    // Prompt for new bowler next over
     innings.currentBowler = null;
     saveMatch(match);
-    if (APP.currentView === 'view-scoring') {
-      setTimeout(() => openChangePlayerModal('bowler'), 100);
-      showToast(`Over ${innings.balls/6} complete! Select a new bowler`);
-    } else {
-      showToast(`Over ${innings.balls/6} complete!`);
+    if (!inningsEnds) {
+      if (APP.currentView === 'view-scoring') {
+        setTimeout(() => openChangePlayerModal('bowler'), 100);
+        showToast(`Over ${innings.balls/6} complete! Select a new bowler`);
+      } else {
+        showToast(`Over ${innings.balls/6} complete!`);
+      }
     }
   }
-  // Check innings end
-  if (innings.wickets >= match.wickets || innings.balls >= match.overs * 6) {
-    endInningsAuto(innings, match);
-  }
-  // Check target reached
-  if (innings.target && innings.totalRuns >= innings.target) {
+
+  if (hasReachedTarget) {
     endMatchChase(innings, match);
+    return;
+  }
+  if (hasAllOut || hasUsedAllOvers) {
+    endInningsAuto(innings, match);
   }
 }
 
@@ -2023,6 +2060,23 @@ function openChangePlayerModal(role) {
   renderScoringView();
 }
 
+function swapStrike() {
+  const innings = getCurrentInnings();
+  if (!innings) return;
+  const batters = innings.currentBatters.filter(pid => pid);
+  if (batters.length < 2) {
+    showToast('Swap requires two batters on the field');
+    return;
+  }
+  const nonStriker = batters.find(pid => pid !== innings.onStrike);
+  if (nonStriker) {
+    innings.onStrike = nonStriker;
+    saveMatch(APP.currentMatch);
+    renderScoringView();
+    showToast('Batsmen swapped');
+  }
+}
+
 // ============================================================
 // END INNINGS / MATCH
 // ============================================================
@@ -2197,6 +2251,7 @@ function renderScoringView() {
     </div>`;
   }
   headerHTML += '</div>';
+  headerHTML += `<div class="score-actions"><button class="action-btn small" onclick="swapStrike()">Swap Batsmen</button></div>`;
 
   // Bowler
   if (innings.currentBowler) {
@@ -2422,7 +2477,7 @@ async function exportScorecardPDF() {
     const pdfFile = new File([pdfBlob], fileName, { type: 'application/pdf' });
 
     if (navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
-      await navigator.share({ files: [pdfFile], title: fileName, text: 'Match Scorecard' });
+      await navigator.share({ files: [pdfFile], title: fileName, text: title });
       showToast('PDF ready to share');
       return;
     }
@@ -2446,6 +2501,76 @@ async function exportScorecardPDF() {
     console.error(err);
     showToast('PDF export failed');
   }
+}
+
+async function exportStatsPDF() {
+  const content = document.getElementById('stats-content');
+  if (!content) return;
+  await exportContentPDF(content, 'Player_Stats');
+}
+
+async function exportContentPDF(content, defaultFileName) {
+  showToast('Generating PDF...');
+  try {
+    const canvas = await html2canvas(content, { scale: 2, useCORS: true, backgroundColor: '#0b1731' });
+    const imgData = canvas.toDataURL('image/png');
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    const pdfWidth = pdf.internal.pageSize.getWidth();
+    const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+    pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+    const fileName = `${defaultFileName}.pdf`;
+    const pdfBlob = pdf.output('blob');
+    const pdfFile = new File([pdfBlob], fileName, { type: 'application/pdf' });
+
+    if (navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
+      await navigator.share({ files: [pdfFile], title: fileName, text: defaultFileName });
+      showToast('PDF ready to share');
+      return;
+    }
+
+    if (navigator.msSaveOrOpenBlob) {
+      navigator.msSaveOrOpenBlob(pdfBlob, fileName);
+      showToast('PDF downloaded. Share it from your device.');
+      return;
+    }
+
+    const url = URL.createObjectURL(pdfBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    showToast('PDF downloaded. Share it from your device.');
+  } catch (err) {
+    console.error(err);
+    showToast('PDF export failed');
+  }
+}
+
+function copyStatsShareLink() {
+  const url = `${window.location.href.split('#')[0]}#stats-live`;
+  if (navigator.share) {
+    navigator.share({ title: 'Live player stats', text: 'Open the shared stats view', url }).then(() => {
+      showToast('Share link sent');
+    }).catch(() => {
+      navigator.clipboard.writeText(url).then(() => showToast('Link copied to clipboard'), () => fallbackCopyText(url));
+    });
+    return;
+  }
+  navigator.clipboard.writeText(url).then(() => showToast('Link copied to clipboard'), () => fallbackCopyText(url));
+}
+
+function fallbackCopyText(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+  showToast('Link copied to clipboard');
 }
 
 // ============================================================
@@ -2681,7 +2806,7 @@ function renderStats() {
         <div class="stats-top-name">${p.name}</div>
         <div class="stats-top-metric">${p.batting.runs}</div>
         <div class="stats-top-subtext">Runs</div>
-        <div class="stats-top-subtext">Avg ${avg} · SR ${sr}</div>
+        <div class="stats-top-subtext">${p.batting.matches} matches · ${p.batting.innings} inns</div>
       </div>`;
     }).join('');
     rows = list.map((p,i) => {
@@ -2692,7 +2817,7 @@ function renderStats() {
         <div class="player-avatar">${p.photo?`<img src="${p.photo}" alt="">`:initials(p.name)}</div>
         <div class="player-name">${p.name}</div>
         <div class="stat-value">${p.batting.runs}</div>
-        <div class="stat-label">Avg ${avg} · SR ${sr}</div>
+        <div class="stat-label">Mat ${p.batting.matches} · Inns ${p.batting.innings} · Avg ${avg} · SR ${sr} · HS ${p.batting.hs}</div>
       </div>`;
     }).join('');
   } else if (currentStatsTab === 'bowling') {
@@ -2706,18 +2831,19 @@ function renderStats() {
         <div class="stats-top-name">${p.name}</div>
         <div class="stats-top-metric">${p.bowling.wickets}</div>
         <div class="stats-top-subtext">Wkts</div>
-        <div class="stats-top-subtext">Eco ${eco} · Avg ${avg}</div>
+        <div class="stats-top-subtext">${p.bowling.matches} matches · ${p.bowling.innings} inns</div>
       </div>`;
     }).join('');
     rows = list.filter(p => p.bowling.wickets > 0 || p.bowling.balls > 0).map((p,i) => {
       const eco = p.bowling.balls > 0 ? (p.bowling.runs/(p.bowling.balls/6)).toFixed(2) : '0.00';
       const avg = p.bowling.wickets > 0 ? (p.bowling.runs/p.bowling.wickets).toFixed(1) : '-';
+      const best = p.bowling.bestW > 0 ? `${p.bowling.bestW}/${p.bowling.bestR}` : '-';
       return `<div class="stat-row" onclick="viewPlayerDetail('${p.id}')">
         <div class="stat-rank">${i+1}</div>
         <div class="player-avatar">${p.photo?`<img src="${p.photo}" alt="">`:initials(p.name)}</div>
         <div class="player-name">${p.name}</div>
         <div class="stat-value">${p.bowling.wickets}</div>
-        <div class="stat-label">Eco ${eco} · Avg ${avg}</div>
+        <div class="stat-label">Mat ${p.bowling.matches} · Inns ${p.bowling.innings} · Eco ${eco} · Avg ${avg} · Best ${best}</div>
       </div>`;
     }).join('');
     if (!rows) rows = '<div class="empty-state"><div class="empty-text">No bowling data yet</div></div>';
@@ -2731,7 +2857,7 @@ function renderStats() {
         <div class="stats-top-name">${p.name}</div>
         <div class="stats-top-metric">${total}</div>
         <div class="stats-top-subtext">Contributions</div>
-        <div class="stats-top-subtext">Catches ${p.fielding.catches} · Run Outs ${p.fielding.runOuts}</div>
+        <div class="stats-top-subtext">Matches ${p.batting.matches} · Inns ${p.batting.innings}</div>
       </div>`;
     }).join('');
     rows = list.filter(p => p.fielding.catches > 0 || p.fielding.runOuts > 0).map((p,i) => {
@@ -2740,8 +2866,8 @@ function renderStats() {
         <div class="stat-rank">${i+1}</div>
         <div class="player-avatar">${p.photo?`<img src="${p.photo}" alt="">`:initials(p.name)}</div>
         <div class="player-name">${p.name}</div>
-        <div class="stat-value">${p.fielding.catches} / ${p.fielding.runOuts}</div>
-        <div class="stat-label">Total ${total}</div>
+        <div class="stat-value">${total}</div>
+        <div class="stat-label">Mat ${p.batting.matches} · Inns ${p.batting.innings} · Catches ${p.fielding.catches} · Run Outs ${p.fielding.runOuts}</div>
       </div>`;
     }).join('');
     if (!rows) rows = '<div class="empty-state"><div class="empty-text">No fielding data yet</div></div>';
@@ -2772,7 +2898,7 @@ function renderStats() {
         <div class="stats-top-name">${p.name}</div>
         <div class="stats-top-metric">${p._mvp}</div>
         <div class="stats-top-subtext">MVP Score</div>
-        <div class="stats-top-subtext">Runs ${p.batting.runs} · Wkts ${p.bowling.wickets}</div>
+        <div class="stats-top-subtext">Matches ${p.batting.matches} · Inns ${p.batting.innings}</div>
       </div>`;
     }).join('');
     rows = mvpHTML + list.filter(p => p._mvp > 0).map((p,i) => `
@@ -2781,7 +2907,7 @@ function renderStats() {
         <div class="player-avatar">${p.photo?`<img src="${p.photo}" alt="">`:initials(p.name)}</div>
         <div class="player-name">${p.name}</div>
         <div class="stat-value">${p._mvp}</div>
-        <div class="stat-label">Runs ${p.batting.runs} · Wkts ${p.bowling.wickets}</div>
+        <div class="stat-label">Mat ${p.batting.matches} · Runs ${p.batting.runs} · Wkts ${p.bowling.wickets}</div>
       </div>`).join('');
     if (!rows) rows = '<div class="empty-state"><div class="empty-text">Play some matches to see MVP rankings!</div></div>';
   }
@@ -3083,6 +3209,12 @@ function checkHash() {
   if (hash.startsWith('#live-')) {
     const matchId = hash.replace('#live-', '');
     renderLiveView(matchId);
+    return;
+  }
+  if (hash.startsWith('#stats-live')) {
+    showView('view-stats');
+    showToast('Shared stats view active');
+    return;
   }
 }
 window.addEventListener('hashchange', checkHash);
