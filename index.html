@@ -11,6 +11,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@300;400;500;600&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
@@ -1187,11 +1189,151 @@ html, body { height: 100%; background: var(--bg-deep); color: var(--text-primary
 // ============================================================
 // STATE & STORAGE
 // ============================================================
-const DB = {
-  get: (k) => { try { return JSON.parse(localStorage.getItem('cp_'+k) || 'null'); } catch(e) { return null; } },
-  set: (k, v) => localStorage.setItem('cp_'+k, JSON.stringify(v)),
-  del: (k) => localStorage.removeItem('cp_'+k)
+const FIREBASE_CONFIG = {
+  enabled: false,
+  config: {
+    apiKey: '',
+    authDomain: '',
+    databaseURL: '',
+    projectId: '',
+    storageBucket: '',
+    messagingSenderId: '',
+    appId: ''
+  }
 };
+
+const LOCAL_CACHE = { matches: null, players: null };
+
+const DB = {
+  localGet: (k) => { try { return JSON.parse(localStorage.getItem('cp_'+k) || 'null'); } catch(e) { return null; } },
+  localSet: (k, v) => localStorage.setItem('cp_'+k, JSON.stringify(v)),
+  localDel: (k) => localStorage.removeItem('cp_'+k),
+  get: (k) => { return LOCAL_CACHE[k] || null; },
+  set: (k, v) => {
+    LOCAL_CACHE[k] = v;
+    DB.localSet(k, v);
+    if (CLOUD.ready) CLOUD.set(k, v);
+  },
+  del: (k) => {
+    delete LOCAL_CACHE[k];
+    DB.localDel(k);
+    if (CLOUD.ready) CLOUD.del(k);
+  }
+};
+
+const CLOUD = {
+  ready: false,
+  listeners: {},
+  initialized: false,
+  isConfigComplete() {
+    const cfg = FIREBASE_CONFIG.config;
+    return cfg.apiKey && cfg.databaseURL && cfg.projectId && cfg.appId;
+  },
+  init() {
+    if (CLOUD.initialized) return;
+    CLOUD.initialized = true;
+    if (!FIREBASE_CONFIG.enabled || !CLOUD.isConfigComplete()) {
+      console.info('Cloud sync disabled or config missing');
+      return;
+    }
+    try {
+      if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG.config);
+      CLOUD.db = firebase.database();
+      CLOUD.ready = true;
+      CLOUD.syncWithCloud();
+      CLOUD.subscribeGlobal();
+      showToast('Cloud sync enabled', 1500);
+    } catch (e) {
+      console.error('Cloud initialization failed', e);
+      CLOUD.ready = false;
+      showToast('Cloud sync unavailable', 2000);
+    }
+  },
+  ref(path) {
+    if (!CLOUD.ready || !CLOUD.db) return null;
+    return firebase.database().ref(path);
+  },
+  async set(key, value) {
+    const ref = CLOUD.ref(key);
+    if (!ref) return;
+    try { await ref.set(value); } catch (e) { console.warn('Cloud set failed', e); }
+  },
+  async del(key) {
+    const ref = CLOUD.ref(key);
+    if (!ref) return;
+    try { await ref.remove(); } catch (e) { console.warn('Cloud delete failed', e); }
+  },
+  async syncWithCloud() {
+    try {
+      const matchesSnap = await CLOUD.ref('matches').once('value');
+      const playersSnap = await CLOUD.ref('players').once('value');
+      const cloudMatches = matchesSnap.val() || {};
+      const cloudPlayers = playersSnap.val() || {};
+      const mergedMatches = mergeData(cloudMatches, LOCAL_CACHE.matches || {});
+      const mergedPlayers = mergeData(cloudPlayers, LOCAL_CACHE.players || {});
+      LOCAL_CACHE.matches = mergedMatches;
+      LOCAL_CACHE.players = mergedPlayers;
+      DB.localSet('matches', mergedMatches);
+      DB.localSet('players', mergedPlayers);
+      if (!Object.keys(cloudMatches).length && Object.keys(LOCAL_CACHE.matches || {}).length) {
+        await CLOUD.set('matches', LOCAL_CACHE.matches);
+      }
+      if (!Object.keys(cloudPlayers).length && Object.keys(LOCAL_CACHE.players || {}).length) {
+        await CLOUD.set('players', LOCAL_CACHE.players);
+      }
+    } catch (e) {
+      console.warn('Cloud sync failed', e);
+    }
+  },
+  subscribeGlobal() {
+    const matchesRef = CLOUD.ref('matches');
+    const playersRef = CLOUD.ref('players');
+    if (matchesRef) {
+      matchesRef.on('value', snapshot => {
+        const allMatches = snapshot.val() || {};
+        LOCAL_CACHE.matches = mergeData(allMatches, LOCAL_CACHE.matches || {});
+        DB.localSet('matches', LOCAL_CACHE.matches);
+        if (APP.currentView === 'view-home') renderHomeMatches();
+        if (APP.currentView === 'view-history') renderHistory();
+        if (APP.currentView === 'view-live' && APP.currentMatch) renderLiveView(APP.currentMatch.id);
+        if (APP.currentView === 'view-scorecard' && APP.currentMatch) renderMatchScorecard(APP.currentMatch.id);
+        if (APP.currentView === 'view-scoring' && APP.currentMatch) { APP.currentMatch = LOCAL_CACHE.matches[APP.currentMatch.id]; renderScoringView(); }
+      });
+    }
+    if (playersRef) {
+      playersRef.on('value', snapshot => {
+        const allPlayers = snapshot.val() || {};
+        LOCAL_CACHE.players = mergeData(allPlayers, LOCAL_CACHE.players || {});
+        DB.localSet('players', LOCAL_CACHE.players);
+        if (APP.currentView === 'view-players') renderPlayersList();
+        if (APP.currentView === 'view-stats') renderStats();
+        if (APP.currentView === 'view-player-detail' && document.getElementById('player-detail-title')) {
+          const pid = document.getElementById('player-detail-title').__pid;
+          if (pid) viewPlayerDetail(pid);
+        }
+      });
+    }
+  }
+};
+
+function mergeData(cloudData, localData) {
+  const merged = { ...cloudData };
+  for (const id in localData) {
+    if (!merged[id]) {
+      merged[id] = localData[id];
+    } else {
+      const localUpdated = localData[id].updated || 0;
+      const cloudUpdated = merged[id].updated || 0;
+      merged[id] = localUpdated > cloudUpdated ? localData[id] : merged[id];
+    }
+  }
+  return merged;
+}
+
+function initAppStorage() {
+  LOCAL_CACHE.matches = DB.localGet('matches') || {};
+  LOCAL_CACHE.players = DB.localGet('players') || {};
+}
 
 let APP = {
   currentView: 'view-home',
@@ -1244,7 +1386,10 @@ function showView(id, skipHistory=false) {
 // PLAYERS MANAGEMENT
 // ============================================================
 function getPlayers() { return DB.get('players') || {}; }
-function savePlayers(p) { DB.set('players', p); }
+function savePlayers(p) {
+  Object.values(p).forEach(player => { player.updated = player.updated || Date.now(); });
+  DB.set('players', p);
+}
 
 function getOrCreatePlayer(name) {
   const players = getPlayers();
@@ -1252,7 +1397,7 @@ function getOrCreatePlayer(name) {
   let found = Object.values(players).find(p => p.name.toLowerCase() === nameKey);
   if (!found) {
     const id = uid();
-    found = { id, name: name.trim(), nick: '', created: Date.now(), photo: null,
+    found = { id, name: name.trim(), nick: '', created: Date.now(), updated: Date.now(), photo: null,
       batting: { matches:0, innings:0, runs:0, hs:0, notOuts:0, balls:0, fours:0, sixes:0 },
       bowling: { matches:0, innings:0, wickets:0, runs:0, balls:0, maidens:0, bestW:0, bestR:999 },
       fielding: { catches:0, runOuts:0 },
@@ -1328,6 +1473,7 @@ function createMatch() {
     players: { A: [], B: [] },
     status: 'setup',
     created: Date.now(),
+    updated: Date.now(),
     innings: [],
     currentInnings: 0,
     potm: null
@@ -1456,6 +1602,7 @@ function getCurrentInnings() {
 }
 
 function saveMatch(match) {
+  match.updated = Date.now();
   const matches = DB.get('matches') || {};
   matches[match.id] = match;
   DB.set('matches', matches);
@@ -2720,7 +2867,12 @@ function renderLiveView(matchId) {
     const matches = DB.get('matches') || {};
     const match = matches[matchId];
     const el = document.getElementById('live-content');
-    if (!match) { el.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">Match not found</div></div>'; return; }
+    if (!match) {
+      el.innerHTML = CLOUD.ready
+        ? '<div class="empty-state"><div class="empty-icon">⏳</div><div class="empty-text">Loading match...</div></div>'
+        : '<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">Match not found</div></div>';
+      return;
+    }
     const players = getPlayers();
     const inn = match.innings[match.currentInnings];
     if (!inn) { el.innerHTML = `<div class="section"><div class="empty-state"><div class="empty-icon">⏳</div><div class="empty-text">Match starting soon...</div></div></div>`; return; }
@@ -2796,7 +2948,7 @@ function renderLiveView(matchId) {
       </div>`;
     }
     el.innerHTML = html;
-    if (match.status === 'live') setTimeout(refresh, 5000);
+    if (match.status === 'live' && !CLOUD.ready) setTimeout(refresh, 5000);
   }
   refresh();
 }
@@ -2823,6 +2975,8 @@ function checkHash() {
 }
 window.addEventListener('hashchange', checkHash);
 window.addEventListener('load', () => {
+  initAppStorage();
+  CLOUD.init();
   checkHash();
   renderHomeMatches();
   document.getElementById('nm-wickets').value = '10';
