@@ -621,6 +621,15 @@ html, body { height: 100%; background: var(--bg-deep); color: var(--text-primary
   font-size: 13px;
   transition: transform 0.15s ease, background 0.15s ease;
 }
+.view.live-only .app-header,
+.view.live-only .stats-tab-bar,
+.view.live-only .search-wrap,
+.view.live-only .stats-actions {
+  display: none !important;
+}
+.view.live-only #stats-content {
+  padding-top: 0;
+}
 .action-btn:hover {
   background: rgba(255,255,255,0.08);
   transform: translateY(-1px);
@@ -1312,11 +1321,9 @@ const CLOUD = {
       CLOUD.ready = true;
       CLOUD.syncWithCloud();
       CLOUD.subscribeGlobal();
-      showToast('Cloud sync enabled', 1500);
     } catch (e) {
       console.error('Cloud initialization failed', e);
       CLOUD.ready = false;
-      showToast('Cloud sync unavailable', 2000);
     }
   },
   ref(path) {
@@ -1414,6 +1421,7 @@ let APP = {
   scoring: { dismissal: null, fielder: null, newBatter: null, extrasType: null },
   playerModalCallback: null,
   statsTab: 'batting',
+  statsLiveMode: false,
   openedFromHistory: false,
   prevView: 'view-home'
 };
@@ -1442,12 +1450,19 @@ function openModal(id) { document.getElementById(id).classList.add('open'); }
 // ============================================================
 function showView(id, skipHistory=false) {
   if (id !== APP.currentView) APP.prevView = APP.currentView;
+  if (id !== 'view-stats') {
+    APP.statsLiveMode = false;
+    document.getElementById('view-stats').classList.remove('live-only');
+  }
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById(id).classList.add('active');
   APP.currentView = id;
   window.scrollTo(0,0);
   if (id === 'view-home') renderHomeMatches();
-  if (id === 'view-stats') renderStats();
+  if (id === 'view-stats') {
+    document.getElementById('view-stats').classList.toggle('live-only', APP.statsLiveMode);
+    renderStats();
+  }
   if (id === 'view-history') renderHistory();
   if (id === 'view-players') renderPlayersList();
 }
@@ -2463,44 +2478,8 @@ function copyShareLink() {
 async function exportScorecardPDF() {
   const content = document.getElementById('scorecard-content');
   if (!content) return;
-  showToast('Generating PDF...');
-  try {
-    const canvas = await html2canvas(content, { scale: 2, useCORS: true, backgroundColor: '#0b1731' });
-    const imgData = canvas.toDataURL('image/png');
-    const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF('p', 'mm', 'a4');
-    const pdfWidth = pdf.internal.pageSize.getWidth();
-    const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-    pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-    const fileName = `${document.getElementById('scorecard-title').textContent.replace(/\s+/g, '_')}.pdf`;
-    const pdfBlob = pdf.output('blob');
-    const pdfFile = new File([pdfBlob], fileName, { type: 'application/pdf' });
-
-    if (navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
-      await navigator.share({ files: [pdfFile], title: fileName, text: title });
-      showToast('PDF ready to share');
-      return;
-    }
-
-    if (navigator.msSaveOrOpenBlob) {
-      navigator.msSaveOrOpenBlob(pdfBlob, fileName);
-      showToast('PDF downloaded. Share it from your device.');
-      return;
-    }
-
-    const url = URL.createObjectURL(pdfBlob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-    showToast('PDF downloaded. Share it from your device.');
-  } catch (err) {
-    console.error(err);
-    showToast('PDF export failed');
-  }
+  const title = (document.getElementById('scorecard-title')?.textContent || 'Scorecard').replace(/\s+/g, '_');
+  await exportContentPDF(content, title);
 }
 
 async function exportStatsPDF() {
@@ -2512,7 +2491,15 @@ async function exportStatsPDF() {
 async function exportContentPDF(content, defaultFileName) {
   showToast('Generating PDF...');
   try {
-    const canvas = await html2canvas(content, { scale: 2, useCORS: true, backgroundColor: '#0b1731' });
+    const canvas = await html2canvas(content, {
+      scale: Math.max(2, window.devicePixelRatio || 1),
+      useCORS: true,
+      backgroundColor: '#0b1731',
+      scrollX: -window.scrollX,
+      scrollY: -window.scrollY,
+      windowWidth: document.documentElement.scrollWidth,
+      windowHeight: document.documentElement.scrollHeight
+    });
     const imgData = canvas.toDataURL('image/png');
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF('p', 'mm', 'a4');
@@ -2524,9 +2511,13 @@ async function exportContentPDF(content, defaultFileName) {
     const pdfFile = new File([pdfBlob], fileName, { type: 'application/pdf' });
 
     if (navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
-      await navigator.share({ files: [pdfFile], title: fileName, text: defaultFileName });
-      showToast('PDF ready to share');
-      return;
+      try {
+        await navigator.share({ files: [pdfFile], title: fileName, text: defaultFileName });
+        showToast('PDF ready to share');
+        return;
+      } catch (shareError) {
+        console.warn('Share failed, falling back to download', shareError);
+      }
     }
 
     if (navigator.msSaveOrOpenBlob) {
@@ -3212,8 +3203,8 @@ function checkHash() {
     return;
   }
   if (hash.startsWith('#stats-live')) {
+    APP.statsLiveMode = true;
     showView('view-stats');
-    showToast('Shared stats view active');
     return;
   }
 }
