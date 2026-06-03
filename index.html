@@ -2683,6 +2683,13 @@ function deleteMatch(matchId) {
   if (!matches[matchId]) return;
   delete matches[matchId];
   DB.set('matches', matches);
+  if (CLOUD.ready) {
+    CLOUD.del(`matches/${matchId}`);
+  }
+  if (LOCAL_CACHE.matches) delete LOCAL_CACHE.matches[matchId];
+  if (window.location.hash === `#live-${matchId}`) {
+    window.location.hash = '';
+  }
   rebuildAllPlayerStats();
   if (APP.currentMatch && APP.currentMatch.id === matchId) {
     APP.currentMatch = null;
